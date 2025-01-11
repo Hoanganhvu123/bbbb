@@ -1,0 +1,23 @@
+[
+  {
+    "id": "1",
+    "title": "Cơm Gà Xối Mỡ",
+    "price": "45000",
+    "imageURL": "https://images.unsplash.com/photo-1562967914-608f82629710",
+    "description": "Cơm gà xối mỡ thơm ngon, da giòn, thịt mềm"
+  },
+  {
+    "id": "2",
+    "title": "Phở Bò",
+    "price": "55000",
+    "imageURL": "https://images.unsplash.com/photo-1582878826629-29b7ad1cdc43",
+    "description": "Phở bò truyền thống, nước dùng đậm đà"
+  },
+  {
+    "id": "3",
+    "title": "Bún Chả",
+    "price": "40000",
+    "imageURL": "https://images.unsplash.com/photo-1583032015879-e5022cb87c3b",
+    "description": "Bún chả Hà Nội, thịt nướng thơm lừng"
+  }
+] 
