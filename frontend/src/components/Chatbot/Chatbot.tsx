@@ -135,7 +135,7 @@ const Chatbot: React.FC = () => {
       };
 
       websocket.onerror = (error) => {
-        console.log('❌ WebSocket error:', error);
+        console.error('❌ WebSocket error:', error);
         setConnectionStatus('disconnected');
       };
 
@@ -206,20 +206,25 @@ const Chatbot: React.FC = () => {
     if (!inputMessage.trim()) return;
     
     if (connectionStatus !== 'connected') {
+      console.error('WebSocket not connected!');
       addMessage('Đang kết nối lại với server...', false);
       return;
     }
 
-    console.log('📤 Sending message:', inputMessage);
-    console.log('🛒 Cart items:', cartState.items);
+    console.log('📤 Attempting to send message:', inputMessage);
+    console.log('🔌 WebSocket state:', ws?.readyState);
+    
+    try {
+      ws?.send(JSON.stringify({ 
+        message: inputMessage,
+        cart_items: cartState.items 
+      }));
+      console.log('✅ Message sent successfully');
+    } catch (error) {
+      console.error('❌ Error sending message:', error);
+    }
+    
     addMessage(inputMessage, true);
-    
-    // Gửi cả message và cart items
-    ws?.send(JSON.stringify({ 
-      message: inputMessage,
-      cart_items: cartState.items 
-    }));
-    
     setInputMessage('');
   };
 

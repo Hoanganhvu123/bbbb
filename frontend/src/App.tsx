@@ -9,6 +9,7 @@ import ProductDetail from './Pages/ProductDetail';
 import Cart from './components/Cart';
 import { CartProvider } from './context/CartContext';
 import Chatbot from './components/Chatbot/Chatbot';
+import PolicyPage from './Pages/Policy';
 
 const App: React.FC = () => {
   return (
@@ -20,6 +21,7 @@ const App: React.FC = () => {
             <Routes>
               <Route path="/" element={<Products />} />
               <Route path="/product/:id" element={<ProductDetail />} />
+              <Route path="/chinh-sach" element={<PolicyPage />} />
             </Routes>
           </main>
           <Footer />

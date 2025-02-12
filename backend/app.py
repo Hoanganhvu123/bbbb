@@ -2,8 +2,8 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
-from backend.prompt import SALES_AGENT_PROMPT
-from backend.process import product_search
+from prompt import SALES_AGENT_PROMPT
+from process import product_search
 from openai import OpenAI
 import os
 import signal
@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 import json
 import logging
 import asyncio
+from vector_store import VectorStoreManager
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -25,7 +26,7 @@ app = FastAPI()
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # Trong production nên giới hạn domain cụ thể
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"]
@@ -45,6 +46,9 @@ async def get_products():
 
 # Initialize OpenAI client
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+# Khởi tạo vector store
+vector_store = VectorStoreManager()
 
 class ConnectionManager:
     def __init__(self):
@@ -87,78 +91,69 @@ async def keep_connection_alive(websocket: WebSocket):
 
 @app.websocket("/ws/chat")
 async def websocket_endpoint(websocket: WebSocket):
-    await manager.connect(websocket)
-    
-    # Start the keep-alive task
-    keep_alive_task = asyncio.create_task(keep_connection_alive(websocket))
-    
+    logger.info("⚡ New WebSocket connection attempt")
     try:
-        while True:
-            try:
-                # Receive message with timeout
-                data = await asyncio.wait_for(websocket.receive_text())
-                logger.info("📥 RECEIVED FROM FRONTEND:")
-                logger.info("-" * 50)
-                logger.info(json.dumps(json.loads(data), indent=2, ensure_ascii=False))
-                logger.info("-" * 50)
-                
+        await manager.connect(websocket)
+        logger.info("✅ WebSocket connection established")
+        
+        # Start the keep-alive task
+        keep_alive_task = asyncio.create_task(keep_connection_alive(websocket))
+        
+        try:
+            while True:
                 try:
-                    message_data = json.loads(data)
+                    # Log before receiving
+                    logger.info("⏳ Waiting for message...")
                     
-                    if message_data.get("type") == "pong":
-                        logger.info("Received pong message")
-                        continue
-                        
-                    # Get cart items if available
-                    cart_items = message_data.get("cart_items", [])
-                    logger.info("🛒 CART ITEMS:")
-                    logger.info("-" * 50)
-                    logger.info(json.dumps(cart_items, indent=2, ensure_ascii=False))
-                    logger.info("-" * 50)
+                    # Receive message with timeout
+                    data = await asyncio.wait_for(websocket.receive_text(), timeout=30)
                     
-                    # Search for products
-                    results = product_search.search(message_data["message"])
-                    logger.info("📦 PRODUCTS FOUND:")
-                    logger.info("-" * 50)
-                    logger.info(json.dumps(results, indent=2, ensure_ascii=False))
-                    logger.info("-" * 50)
+                    logger.info("📥 Raw data received: %s", data)
                     
-                    # Format context for prompt
-                    context = f"[{json.dumps(results, ensure_ascii=False)}]"
-                    cart_items_str = json.dumps(cart_items, ensure_ascii=False)
-                    prompt_context = {
-                        "input": message_data["message"],
-                        "context": context,
-                        "cart_items": cart_items_str
-                    }
-
                     try:
-                        # Get response from OpenAI
-                        completion = client.chat.completions.create(
-                            model="gpt-4o-mini",
-                            messages=[
-                                {"role": "system", "content": SALES_AGENT_PROMPT.format(**prompt_context)},
-                                {"role": "user", "content": message_data["message"]}
-                            ],
-                            temperature=0
-                        )
+                        message_data = json.loads(data)
+                        logger.info("📦 Parsed message data: %s", json.dumps(message_data, indent=2))
                         
-                        # Parse response with detailed error handling
-                        try:
-                            ai_response = json.loads(completion.choices[0].message.content)
-                            logger.info("🤖 AI RESPONSE:")
-                            logger.info("-" * 50)
-                            logger.info(json.dumps(ai_response, indent=2, ensure_ascii=False))
-                            logger.info("-" * 50)
-                        except json.JSONDecodeError as e:
-                            logger.error(f"Failed to parse OpenAI response: {e}")
-                            logger.error(f"Raw response: {completion.choices[0].message.content}")
-                            raise Exception("Invalid JSON response from OpenAI")
+                        if message_data.get("type") == "pong":
+                            logger.info("🏓 Received pong message")
+                            continue
+                            
+                        # Get cart items from frontend
+                        cart_items = message_data.get("cart_items", [])
+                        logger.info("🛒 CART ITEMS:")
+                        logger.info("-" * 50)
+                        logger.info(json.dumps(cart_items, indent=2, ensure_ascii=False))
+                        logger.info("-" * 50)
+                        
+                        # Search for products
+                        query = message_data["message"]
+                        products = product_search.search(query)
+                        logger.info("📦 PRODUCTS FOUND:")
+                        logger.info("-" * 50)
+                        logger.info(json.dumps(products, indent=2, ensure_ascii=False))
+                        logger.info("-" * 50)
+                        
+                        # Tìm kiếm thông tin chính sách
+                        policy_results = vector_store.search(query)
+                        logger.info("📦 POLICIES FOUND:")
+                        logger.info("-" * 50)
+                        logger.info(json.dumps(policy_results, indent=2, ensure_ascii=False))
+                        logger.info("-" * 50)
+                        
+                        # Tạo context với đầy đủ thông tin
+                        context = {
+                            "products": products,
+                            "policies": policy_results,
+                            "cart_items": cart_items  # Thêm cart_items vào context
+                        }
+                        
+                        # Gửi cho AI để tạo câu trả lời
+                        response = await get_ai_response(query, context)
                         
                         # Prepare response to send to frontend
                         frontend_response = {
                             "type": "message",
-                            "ai_response": ai_response
+                            "ai_response": response
                         }
                         logger.info("📤 SENDING TO FRONTEND:")
                         logger.info("-" * 50)
@@ -172,41 +167,26 @@ async def websocket_endpoint(websocket: WebSocket):
                         )
                         logger.info("✅ Response sent to client successfully")
                         
-                    except Exception as e:
-                        logger.error(f"Error processing message: {e}")
-                        error_response = {
-                            "type": "message",
-                            "ai_response": {
-                                "response": {
-                                    "message": f"Xin lỗi, có lỗi xảy ra: {str(e)}",
-                                    "product_details": None,
-                                    "suggestions": [
-                                        "Bạn có thể thử lại sau",
-                                        "Hoặc thử tìm kiếm với từ khóa khác"
-                                    ]
-                                }
-                            }
-                        }
-                        logger.error("❌ ERROR RESPONSE:")
-                        logger.error("-" * 50)
-                        logger.error(json.dumps(error_response, indent=2, ensure_ascii=False))
-                        logger.error("-" * 50)
-                        await manager.send_message(json.dumps(error_response, ensure_ascii=False), websocket)
+                    except json.JSONDecodeError as e:
+                        logger.error("❌ Failed to parse message as JSON: %s", e)
+                        logger.error("📄 Raw message content: %s", data)
+                        continue
                         
-                except json.JSONDecodeError as e:
-                    logger.error(f"❌ Failed to parse message as JSON: {e}")
+                except asyncio.TimeoutError:
+                    logger.info("⏰ No message received within timeout period")
                     continue
                     
-            except asyncio.TimeoutError:
-                logger.info("No message received within timeout period")
-                continue
-                
-    except WebSocketDisconnect:
-        logger.info("WebSocket disconnected by client")
-        manager.disconnect(websocket)
+        except WebSocketDisconnect:
+            logger.info("🔌 WebSocket disconnected by client")
+            manager.disconnect(websocket)
+        except Exception as e:
+            logger.error("❌ WebSocket error: %s", e)
+            logger.exception(e)
+            manager.disconnect(websocket)
+            
     except Exception as e:
-        logger.error(f"WebSocket error: {e}")
-        manager.disconnect(websocket)
+        logger.error("❌ Failed to establish WebSocket connection: %s", e)
+        logger.exception(e)
     finally:
         # Cancel the keep-alive task
         keep_alive_task.cancel()
@@ -220,6 +200,56 @@ def signal_handler(sig, frame):
     """Handle Ctrl+C gracefully"""
     print('\nShutting down gracefully...')
     sys.exit(0)
+
+async def get_ai_response(query: str, context: dict) -> dict:
+    """
+    Lấy câu trả lời từ OpenAI API
+    """
+    try:
+        # Format prompt với context đúng trường
+        prompt = SALES_AGENT_PROMPT.format(
+            products=context["products"],  # Kết quả tìm kiếm sản phẩm
+            policies=context["policies"],  # Kết quả tìm kiếm chính sách
+            cart_items=context.get("cart_items", []),  # Giỏ hàng từ frontend
+            query=query  # Câu hỏi của user
+        )
+
+        # Gọi OpenAI API
+        completion = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": query}
+            ],
+            temperature=0.7
+        )
+
+        # Parse response
+        response_text = completion.choices[0].message.content
+        
+        try:
+            # Parse JSON response
+            response_data = json.loads(response_text)
+            return response_data
+        except json.JSONDecodeError:
+            # Fallback nếu response không phải JSON
+            return {
+                "response": {
+                    "message": response_text,
+                    "product_details": None,
+                    "order_status": False
+                }
+            }
+
+    except Exception as e:
+        logger.error(f"Error getting AI response: {e}")
+        return {
+            "response": {
+                "message": f"Xin lỗi, có lỗi xảy ra: {str(e)}",
+                "product_details": None,
+                "order_status": False
+            }
+        }
 
 if __name__ == "__main__":
     # Register signal handler
